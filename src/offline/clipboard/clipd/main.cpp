@@ -14,6 +14,7 @@
 #include <QJsonObject>
 #include <QMimeData>
 #include <QSaveFile>
+#include <QTextDocumentFragment>
 #include <QStandardPaths>
 #include <QTimer>
 #include <KSystemClipboard>
@@ -43,7 +44,7 @@ public:
         QFile::setPermissions(m_dir, QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ExeOwner);
         load();
         m_debounce.setSingleShot(true);
-        m_debounce.setInterval(90);
+        m_debounce.setInterval(40);   // coalesce bursts from one copy without dropping quick successive copies
         connect(&m_debounce, &QTimer::timeout, this, &Store::capture);
         connect(KSystemClipboard::instance(), &KSystemClipboard::changed, this, [this](QClipboard::Mode mode) {
             if (mode == QClipboard::Clipboard)
@@ -161,10 +162,42 @@ private:
         return true;
     }
 
+    // Plain text from whatever the source offered: standard text/plain, a charset variant, the X11
+    // names (UTF8_STRING / STRING) some XWayland apps use, or, as a last resort, text/html.
+    static QString textOf(const QMimeData *md)
+    {
+        if (md->hasText()) {
+            const QString t = md->text();
+            if (!t.trimmed().isEmpty()) return t;
+        }
+        const QStringList formats = md->formats();
+        for (const QString &f : formats) {
+            if (f.startsWith(QLatin1String("text/plain"), Qt::CaseInsensitive) || f == QLatin1String("UTF8_STRING")) {
+                const QString t = QString::fromUtf8(md->data(f));
+                if (!t.trimmed().isEmpty()) return t;
+            }
+        }
+        for (const QString &f : {QStringLiteral("STRING"), QStringLiteral("TEXT")}) {
+            if (formats.contains(f)) {
+                const QString t = QString::fromLatin1(md->data(f));
+                if (!t.trimmed().isEmpty()) return t;
+            }
+        }
+        if (formats.contains(QStringLiteral("text/html"))) {
+            const QString t = QTextDocumentFragment::fromHtml(QString::fromUtf8(md->data(QStringLiteral("text/html")))).toPlainText();
+            if (!t.trimmed().isEmpty()) return t;
+        }
+        return {};
+    }
+
     // Build an Item from clipboard data; pngOut receives the encoded PNG for images.
     bool build(const QMimeData *md, Item &it, QByteArray *pngOut)
     {
         if (!md || md->hasFormat("x-kde-passwordManagerHint")) return false; // never record secrets
+        // Real text wins over an image: spreadsheet cells, rich-text copies and the like offer both,
+        // and the text is what the user meant. Pure images (screenshots, "copy image") have none.
+        const QString text = textOf(md);
+        if (!text.isEmpty()) return textItem(text, it);
         if (md->hasImage()) {
             QImage img = qvariant_cast<QImage>(md->imageData());
             if (img.isNull() || qint64(img.width()) * img.height() > kMaxImagePixels) return false;
@@ -176,7 +209,6 @@ private:
             if (pngOut) *pngOut = png;
             return true;
         }
-        if (md->hasText()) return textItem(md->text(), it);
         return false;
     }
 
