@@ -183,8 +183,10 @@ private:
                 if (!t.trimmed().isEmpty()) return t;
             }
         }
-        if (formats.contains(QStringLiteral("text/html"))) {
-            const QString t = QTextDocumentFragment::fromHtml(QString::fromUtf8(md->data(QStringLiteral("text/html")))).toPlainText();
+        // HTML is only a text source when no image came with it: "copy image" offers <img> markup plus the picture.
+        if (!md->hasImage() && formats.contains(QStringLiteral("text/html"))) {
+            QString t = QTextDocumentFragment::fromHtml(QString::fromUtf8(md->data(QStringLiteral("text/html")))).toPlainText();
+            t.remove(QChar::ObjectReplacementCharacter);   // inline images/objects render as U+FFFC
             if (!t.trimmed().isEmpty()) return t;
         }
         return {};
